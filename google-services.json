@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "233666873681",
+    "project_id": "kt-location-notification",
+    "storage_bucket": "kt-location-notification.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:233666873681:android:428adec595260d17dcab70",
+        "android_client_info": {
+          "package_name": "com.rishukumarcodes.ktlocationtrackingapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB_34qxmXrMq8XpOV-Wx9OpSTPOzN_u5Q0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

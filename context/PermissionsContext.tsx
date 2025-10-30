@@ -1,11 +1,17 @@
-// native/src/context/PermissionsProvider.tsx
-import React, { createContext, useContext, useEffect, useRef, useState } from "react";
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { AppState, Platform } from "react-native";
 import * as Location from "expo-location";
 import * as TaskManager from "expo-task-manager";
 import * as Notifications from "expo-notifications";
 import Constants from "expo-constants";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import io from "socket.io-client";
 
 export interface LocPoint {
   latitude: number;
@@ -16,6 +22,8 @@ export interface LocPoint {
 const MAX_LOCATIONS = 20;
 const STORAGE_KEY = "location_history";
 const LOCATION_TASK_NAME = "background-location-task-v1";
+const SOCKET_URL = "https://rider-prototype-backend.onrender.com";
+let socketInstance: any = null;
 
 // ----- AsyncStorage helpers -----
 export const saveLocationPoint = async (point: LocPoint) => {
@@ -48,6 +56,19 @@ export const clearLocationHistory = async () => {
   }
 };
 
+// helper to fetch stored userId (return null if missing)
+const getStoredUserId = async (): Promise<string | null> => {
+  try {
+    const raw = await AsyncStorage.getItem("userData");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed?._id ?? null;
+  } catch (e) {
+    console.warn("getStoredUserId error:", e);
+    return null;
+  }
+};
+
 // ----- Background task -----
 TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
   if (error) {
@@ -64,7 +85,67 @@ TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
       timestamp: Date.now(),
     };
     await saveLocationPoint(point);
+
+    try {
+      const userId = await getStoredUserId();
+      if (!userId) {
+        console.log("[BG TASK] no userId in storage — skipping socket emit");
+        continue;
+      }
+
+      if (!socketInstance || !socketInstance.connected) {
+        socketInstance = io(SOCKET_URL, {
+          transports: ["websocket"],
+          reconnection: true,
+          reconnectionAttempts: 3,
+          reconnectionDelay: 1500,
+          forceNew: true,
+          timeout: 5000,
+        });
+
+        await new Promise<void>((resolve) => {
+          let resolved = false;
+          const onConnect = () => {
+            if (!resolved) {
+              resolved = true;
+              console.log("[BG TASK] socket connected");
+              resolve();
+            }
+          };
+          socketInstance.once("connect", onConnect);
+          socketInstance.once("connect_error", (err) => {
+            console.log("[BG TASK] connect_error:", err.message);
+          });
+          setTimeout(() => {
+            if (!resolved) {
+              console.log("[BG TASK] socket connection timed out");
+              resolved = true;
+              resolve();
+            }
+          }, 7000);
+        });
+      }
+
+      if (socketInstance && socketInstance.connected) {
+        socketInstance.emit("locationUpdate", {
+          userId,
+          latitude: point.latitude,
+          longitude: point.longitude,
+        });
+        console.log(
+          "[BG TASK] emitted locationUpdate:",
+          userId,
+          point.latitude,
+          point.longitude
+        );
+      } else {
+        console.log("[BG TASK] socket not connected — skipping emit");
+      }
+    } catch (e) {
+      console.warn("[BG TASK] socket emit failed:", e);
+    }
   }
+
   console.log("[BG TASK] saved locations to AsyncStorage");
 });
 
@@ -75,26 +156,33 @@ interface PermissionsContextType {
   backgroundPermission: boolean;
   sharingLocation: boolean;
   location: { latitude: number; longitude: number } | null;
-  toggleLocationSharing: () => Promise<void>;
   requestNotificationPermission: () => Promise<void>;
   requestLocationPermission: () => Promise<boolean>;
   requestBackgroundPermission: () => Promise<boolean>;
   clearStoredHistory: () => Promise<void>;
 }
 
-const PermissionsContext = createContext<PermissionsContextType | undefined>(undefined);
+const PermissionsContext = createContext<PermissionsContextType | undefined>(
+  undefined
+);
 export const usePermissions = () => {
   const ctx = useContext(PermissionsContext);
-  if (!ctx) throw new Error("usePermissions must be used within PermissionsProvider");
+  if (!ctx)
+    throw new Error("usePermissions must be used within PermissionsProvider");
   return ctx;
 };
 
-export const PermissionsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export const PermissionsProvider: React.FC<{ children: React.ReactNode }> = ({
+  children,
+}) => {
   const [notificationPermission, setNotificationPermission] = useState(false);
   const [locationPermission, setLocationPermission] = useState(false);
   const [backgroundPermission, setBackgroundPermission] = useState(false);
   const [sharingLocation, setSharingLocation] = useState(false);
-  const [location, setLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [location, setLocation] = useState<{
+    latitude: number;
+    longitude: number;
+  } | null>(null);
 
   const watchRef = useRef<Location.LocationSubscription | null>(null);
 
@@ -144,73 +232,96 @@ export const PermissionsProvider: React.FC<{ children: React.ReactNode }> = ({ c
     return granted;
   };
 
-  // ----- Toggle location sharing -----
-  const toggleLocationSharing = async () => {
-    if (sharingLocation) {
-      // Stop foreground watcher
+  // ----- Auto-start location sharing -----
+  useEffect(() => {
+    const startSharing = async () => {
       try {
-        watchRef.current?.remove();
-        watchRef.current = null;
-      } catch (e) {}
-
-      // Stop background task if registered
-      try {
-        if (await TaskManager.isTaskRegisteredAsync(LOCATION_TASK_NAME)) {
-          await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
-          console.log("[PermissionsProvider] background task stopped");
+        if (!locationPermission) {
+          const granted = await requestLocationPermission();
+          if (!granted) return;
         }
-      } catch (e) {
-        console.warn("stopLocationUpdatesAsync failed:", e);
-      }
-
-      setSharingLocation(false);
-      console.log("[PermissionsProvider] Location sharing stopped");
-    } else {
-      // Ensure permissions
-      if (!locationPermission && !(await requestLocationPermission())) return;
-      if (!backgroundPermission && !(await requestBackgroundPermission())) {
-        alert("Background location permission is required");
-        return;
-      }
-
-      // Start foreground watcher
-      watchRef.current = await Location.watchPositionAsync(
-        { accuracy: Location.Accuracy.Highest, timeInterval: 5000, distanceInterval: 1 },
-        async (loc) => {
-          const coords = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
-          setLocation(coords);
-          await saveLocationPoint({ ...coords, timestamp: Date.now() });
+        if (!backgroundPermission) {
+          const granted = await requestBackgroundPermission();
+          if (!granted) return;
         }
-      );
+        if (sharingLocation) return;
 
-      // Start background task ONLY on standalone builds (skip Expo Go)
-      if (Platform.OS === "android" && Constants.appOwnership === "expo") {
-        console.warn("Background location is disabled in Expo Go. Build standalone APK/AAB to test.");
-      } else {
-        if (!(await TaskManager.isTaskRegisteredAsync(LOCATION_TASK_NAME))) {
-          // Tiny delay ensures SharedPreferences initialized
-          await new Promise(res => setTimeout(res, 100));
-          try {
-            await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
-              accuracy: Location.Accuracy.Highest,
-              timeInterval: 2000,
-              distanceInterval: 1,
-              foregroundService: {
-                notificationTitle: "Tracking Location",
-                notificationBody: "App is running in background",
-              },
-              pausesUpdatesAutomatically: false,
-            });
-          } catch (e) {
-            console.warn("startLocationUpdatesAsync failed:", e);
+        console.log("[AutoStart] Starting location sharing...");
+
+        watchRef.current = await Location.watchPositionAsync(
+          {
+            accuracy: Location.Accuracy.Highest,
+            timeInterval: 5000,
+            distanceInterval: 1,
+          },
+          async (loc) => {
+            const coords = {
+              latitude: loc.coords.latitude,
+              longitude: loc.coords.longitude,
+            };
+            setLocation(coords);
+            await saveLocationPoint({ ...coords, timestamp: Date.now() });
+
+            try {
+              const userId = await getStoredUserId();
+              if (!userId) return;
+
+              if (
+                !global.foregroundSocket ||
+                !global.foregroundSocket.connected
+              ) {
+                global.foregroundSocket = io(SOCKET_URL, {
+                  transports: ["websocket"],
+                  reconnection: true,
+                });
+              }
+
+              global.foregroundSocket.emit("locationUpdate", {
+                userId,
+                latitude: coords.latitude,
+                longitude: coords.longitude,
+              });
+            } catch (e) {
+              console.warn("Emit failed:", e);
+            }
+          }
+        );
+
+        if (Platform.OS === "android" && Constants.appOwnership === "expo") {
+          console.warn(
+            "Background location is disabled in Expo Go. Build standalone APK/AAB to test."
+          );
+        } else {
+          if (!(await TaskManager.isTaskRegisteredAsync(LOCATION_TASK_NAME))) {
+            try {
+              await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
+                accuracy: Location.Accuracy.Highest,
+                timeInterval: 2000,
+                distanceInterval: 1,
+                foregroundService: {
+                  notificationTitle: "Tracking Location",
+                  notificationBody: "App is running in background",
+                },
+                pausesUpdatesAutomatically: false,
+                showsBackgroundLocationIndicator: true,
+              });
+            } catch (e) {
+              console.warn("startLocationUpdatesAsync failed:", e);
+            }
           }
         }
-      }
 
-      setSharingLocation(true);
-      console.log("[PermissionsProvider] Location sharing started");
+        setSharingLocation(true);
+        console.log("[AutoStart] Location sharing started");
+      } catch (e) {
+        console.warn("[AutoStart] Failed:", e);
+      }
+    };
+
+    if (locationPermission && backgroundPermission) {
+      startSharing();
     }
-  };
+  }, [locationPermission, backgroundPermission]);
 
   const clearStoredHistory = async () => {
     await clearLocationHistory();
@@ -224,7 +335,6 @@ export const PermissionsProvider: React.FC<{ children: React.ReactNode }> = ({ c
         backgroundPermission,
         sharingLocation,
         location,
-        toggleLocationSharing,
         requestNotificationPermission,
         requestLocationPermission,
         requestBackgroundPermission,

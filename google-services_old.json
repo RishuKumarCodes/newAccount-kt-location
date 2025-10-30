@@ -1,13 +1,13 @@
 {
   "project_info": {
-    "project_number": "1032448564105",
-    "project_id": "rider-ac693",
-    "storage_bucket": "rider-ac693.firebasestorage.app"
+    "project_number": "233666873681",
+    "project_id": "kt-location-notification",
+    "storage_bucket": "kt-location-notification.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:1032448564105:android:79a7a93a57afe06e4adf58",
+        "mobilesdk_app_id": "1:233666873681:android:428adec595260d17dcab70",
         "android_client_info": {
           "package_name": "com.rishukumarcodes.ktlocationtrackingapp"
         }
@@ -15,7 +15,7 @@
       "oauth_client": [],
       "api_key": [
         {
-          "current_key": "AIzaSyBWEDZCm6h4lYdhs093wW86K6eFGb8pzuY"
+          "current_key": "AIzaSyB_34qxmXrMq8XpOV-Wx9OpSTPOzN_u5Q0"
         }
       ],
       "services": {

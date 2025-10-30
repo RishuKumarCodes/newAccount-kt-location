@@ -1,4 +1,4 @@
-import AntDesign from '@expo/vector-icons/AntDesign';
+import AntDesign from "@expo/vector-icons/AntDesign";
 import React from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import {
@@ -108,8 +108,8 @@ export default function PermissionBtns({
         </View>
       )}
 
-      <View style={[styles.card, styles.sharingCard]}>
-        <View style={styles.contentWrapper}>
+      {/* <View style={[styles.card, styles.sharingCard]}> */}
+      {/* <View style={styles.contentWrapper}>
           <View style={styles.textContainer}>
             <Text style={styles.title}>
               {sharingLocation
@@ -122,20 +122,21 @@ export default function PermissionBtns({
                 : "Begin sharing your location with others"}
             </Text>
           </View>
-        </View>
-        <Pressable
-          style={({ pressed }) => [
-            styles.button,
-            sharingLocation && styles.stopButton,
-            pressed && styles.buttonPressed,
-          ]}
-          onPress={toggleLocationSharing}
-        >
-          <Text style={styles.buttonText}>
-            {sharingLocation ? "Stop" : "Start"}
-          </Text>
-        </Pressable>
-      </View>
+        </View> */}
+      {/* <Pressable
+        style={({ pressed }) => [
+          styles.button,
+          sharingLocation && styles.stopButton,
+          pressed && styles.buttonPressed,
+          { marginRight: "auto", width: "fit" },
+        ]}
+        onPress={toggleLocationSharing}
+      >
+        <Text style={styles.buttonText}>
+          {sharingLocation ? "Stop" : "Start"}
+        </Text>
+      </Pressable> */}
+      {/* </View> */}
     </View>
   );
 }

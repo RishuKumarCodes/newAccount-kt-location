@@ -28,9 +28,10 @@
         "ACCESS_BACKGROUND_LOCATION",
         "FOREGROUND_SERVICE",
         "FOREGROUND_SERVICE_LOCATION",
-        "NOTIFICATIONS",
+        "POST_NOTIFICATIONS",
         "android.permission.ACCESS_COARSE_LOCATION",
-        "android.permission.ACCESS_FINE_LOCATION"
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.POST_NOTIFICATIONS"
       ],
       "config": {
         "googleMaps": {
@@ -49,7 +50,13 @@
         "expo-notifications",
         {
           "icon": "./assets/images/notification-icon.png",
-          "color": "#ff2f00"
+          "color": "#ff2f00",
+          "sounds": [
+            "./assets/sounds/order_ring.mp3",
+            "./assets/sounds/message.mp3"
+          ],
+          "androidMode": "default",
+          "androidCollapsedTitle": "#{unread_notifications} new interactions"
         }
       ],
       [

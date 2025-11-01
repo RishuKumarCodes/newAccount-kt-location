@@ -1,31 +1,32 @@
 import React, { useEffect, useRef, useState } from "react";
-import { StyleSheet } from "react-native";
-import { WebView } from "react-native-webview";
+import { Button, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { WebView } from "react-native-webview";
 // import * as Notifications from "expo-notifications";
 
 import AskPermissionCard from "@/components/AskPermissioncard";
 import PermissionBtns from "@/components/PermissionBtns";
 import {
-  usePermissions,
   PermissionsProvider,
+  usePermissions,
 } from "../context/PermissionsContext";
 
 import {
-  getLocationHistory,
   clearLocationHistory,
+  getLocationHistory,
 } from "../services/locationStorage";
 
-import {
-  initNotifications,
-  handleWebMessageFromPWA,
-  setOnNotificationResponse,
-  popPendingNotificationResponse,
-  getDeliveredNotificationsHistory,
-  cleanupNotifications,
-  registerForPushNotificationsAsync,
-} from "../services/NotificationService";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import {
+  cleanupNotifications,
+  getDeliveredNotificationsHistory,
+  handleWebMessageFromPWA,
+  initNotifications,
+  popPendingNotificationResponse,
+  registerForPushNotificationsAsync,
+  setOnNotificationResponse,
+  stopCustomSound,
+} from "../services/NotificationService";
 
 const AppInner: React.FC = () => {
   const {
@@ -43,6 +44,7 @@ const AppInner: React.FC = () => {
   const pendingMessages = useRef<string[]>([]);
   const fcmTokenRef = useRef<string | null>(null);
   const [isLoggedIn, setIsLoggedIn] = useState(null);
+  const [showStopButton, setShowStopButton] = useState(false);
 
   useEffect(() => {
     const checkLoginStatus = async () => {
@@ -163,8 +165,8 @@ const AppInner: React.FC = () => {
           // Save user data + JWT for future requests
           await AsyncStorage.setItem("userData", JSON.stringify(user));
           await AsyncStorage.setItem("authToken", token);
-          // console.log("✅ Saved userId:", user._id);
-          // console.log("✅ Saved authToken:", token);
+          console.log("✅ Saved userId:", user._id);
+          console.log("✅ Saved authToken:", token);
 
           // Send FCM token immediately after login
           const fcmToken = fcmTokenRef.current;
@@ -224,7 +226,7 @@ const AppInner: React.FC = () => {
       try {
         await initNotifications();
         const tokenObj = await registerForPushNotificationsAsync();
-        fcmTokenRef.current = tokenObj?.fcmToken || null; // store for later
+        fcmTokenRef.current = tokenObj?.fcmToken || null;
         console.log("🎯 Device Push Token:", fcmTokenRef.current);
         postToWeb({ type: "devicePushToken", token: fcmTokenRef.current });
       } catch (e) {
@@ -232,10 +234,20 @@ const AppInner: React.FC = () => {
       }
     })();
 
+    // ✅ Single callback to handle all taps
     setOnNotificationResponse((response) => {
+      const data = response.notification.request.content.data || {};
+      const type = (data.type || "").toUpperCase();
+
+      // show stop button for order notifications
+      if (type.includes("ORDER")) {
+        setShowStopButton(true);
+      }
+
+      // forward tap info to WebView
       const payload = {
         type: "notificationTap",
-        data: response.notification.request.content.data || {},
+        data,
         title: response.notification.request.content.title,
         body: response.notification.request.content.body,
       };
@@ -254,7 +266,7 @@ const AppInner: React.FC = () => {
           <WebView
             ref={webviewRef}
             source={{
-              uri: "https://rider-prototype-shell.vercel.app/admin/starter",
+              uri: "https://rider-prototype-shell.vercel.app/",
             }}
             style={{ flex: 1 }}
             javaScriptEnabled
@@ -276,6 +288,20 @@ const AppInner: React.FC = () => {
           )}
         </>
       )}
+      {showStopButton && (
+        <View style={styles.overlay}>
+          <View style={styles.popup}>
+            <Text style={styles.popupText}>Order alert ringing...</Text>
+            <Button
+              title="Stop Sound"
+              onPress={async () => {
+                await stopCustomSound();
+                setShowStopButton(false);
+              }}
+            />
+          </View>
+        </View>
+      )}
     </SafeAreaView>
   );
 };
@@ -290,4 +316,26 @@ export default App;
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+
+  overlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "center",
+    alignItems: "center",
+    zIndex: 50,
+  },
+  popup: {
+    backgroundColor: "#fff",
+    padding: 20,
+    borderRadius: 8,
+    alignItems: "center",
+  },
+  popupText: {
+    fontSize: 16,
+    marginBottom: 10,
+  },
 });

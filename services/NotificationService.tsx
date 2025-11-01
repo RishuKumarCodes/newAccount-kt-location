@@ -1,28 +1,107 @@
-// services/notificationService.tsx
+import { Audio } from "expo-av";
 import * as Notifications from "expo-notifications";
-import { Platform } from "react-native";
+import { AppState, NativeModules, Platform } from "react-native";
 
+// --- sound state (for foreground mode) ---
 let _receivedListener: any = null;
 let _responseListener: any = null;
-
 let pendingNotificationResponse: Notifications.NotificationResponse | null =
   null;
-
 let onNotificationResponse:
   | ((response: Notifications.NotificationResponse) => void)
   | null = null;
 
-export const setOnNotificationResponse = (
-  cb: (response: Notifications.NotificationResponse) => void
-) => {
-  onNotificationResponse = cb;
+let soundObject: Audio.Sound | null = null;
+let isPlaying = false;
+
+const soundMap: Record<string, any> = {
+  ORDER: require("../assets/sounds/order_ring.mp3"),
+  GENERAL: require("../assets/sounds/message.mp3"),
+  MESSAGE: require("../assets/sounds/message.mp3"),
 };
 
+// --- native service helpers ---
+async function startNativeRingtoneService() {
+  if (Platform.OS !== "android") return;
+  try {
+    const { RingtoneModule } = NativeModules;
+    if (RingtoneModule?.startRingtoneService) {
+      await RingtoneModule.startRingtoneService();
+      console.log("[notifications] Started native RingtoneService");
+    } else {
+      console.warn("[notifications] RingtoneModule not found");
+    }
+  } catch (e) {
+    console.warn("Failed to start native ringtone service:", e);
+  }
+}
+
+async function stopNativeRingtoneService() {
+  if (Platform.OS !== "android") return;
+  try {
+    const { RingtoneModule } = NativeModules;
+    if (RingtoneModule?.stopRingtoneService) {
+      await RingtoneModule.stopRingtoneService();
+      console.log("[notifications] Stopped native RingtoneService");
+    }
+  } catch (e) {
+    console.warn("Failed to stop native ringtone service:", e);
+  }
+}
+
+// --- in-app playback ---
+async function playCustomSound(normalizedType: string, loop = false) {
+  try {
+    if (soundObject) {
+      try {
+        await soundObject.stopAsync();
+        await soundObject.unloadAsync();
+      } catch {}
+      soundObject = null;
+      isPlaying = false;
+    }
+
+    const soundFile = soundMap[normalizedType];
+    if (!soundFile) return;
+
+    soundObject = new Audio.Sound();
+    await soundObject.loadAsync(soundFile);
+    await soundObject.setIsLoopingAsync(loop);
+    await soundObject.playAsync();
+    isPlaying = true;
+    console.log(`[notifications] Playing ${normalizedType}, loop=${loop}`);
+  } catch (err) {
+    console.warn("playCustomSound failed:", err);
+  }
+}
+
+export async function stopCustomSound() {
+  try {
+    if (soundObject && isPlaying) {
+      await soundObject.stopAsync();
+      await soundObject.unloadAsync();
+      soundObject = null;
+      isPlaying = false;
+      console.log("[notifications] Sound stopped manually");
+    }
+  } catch (err) {
+    console.warn("stopCustomSound failed:", err);
+  }
+  await stopNativeRingtoneService();
+}
+
+// Check if app is in foreground
+function isAppInForeground(): boolean {
+  return AppState.currentState === "active";
+}
+
+// --- setup + listeners ---
 export const initNotifications = async (): Promise<void> => {
   Notifications.setNotificationHandler({
     handleNotification: async () => ({
-      shouldShowAlert: true,
-      shouldPlaySound: true,
+      shouldShowBanner: true,
+      shouldShowList: true,
+      shouldPlaySound: false,
       shouldSetBadge: false,
     }),
   });
@@ -34,45 +113,91 @@ export const initNotifications = async (): Promise<void> => {
         importance: Notifications.AndroidImportance.HIGH,
         vibrationPattern: [0, 250, 250, 250],
         sound: "default",
-        showBadge: true,
         enableLights: true,
         enableVibrate: true,
       });
+
+      await Notifications.setNotificationChannelAsync("order-alert", {
+        name: "Order Alerts",
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 500, 500, 500],
+        sound: "default",
+        enableLights: true,
+        enableVibrate: true,
+      });
+
+      await Notifications.setNotificationCategoryAsync("orderCategory", [
+        {
+          identifier: "STOP_SOUND",
+          buttonTitle: "Stop",
+          options: { opensAppToForeground: false },
+        },
+      ]);
     } catch (err) {
-      console.warn("Failed to create Android notification channel:", err);
+      console.warn("Failed to create Android channels/categories:", err);
     }
   }
 
-  // Install listeners
   _receivedListener = Notifications.addNotificationReceivedListener(
-    (notification) => {
-      // Called when a notification is delivered while the app is foregrounded
-      console.log("[notifications] received:", notification);
-    }
-  );
+    async (notification) => {
+      const dataRaw = notification.request.content.data || {};
+      const type = (dataRaw.type || "").toString().trim().toUpperCase();
+      const normalized = type.includes("ORDER")
+        ? "ORDER"
+        : type.includes("MESSAGE")
+        ? "MESSAGE"
+        : "GENERAL";
 
-  _responseListener = Notifications.addNotificationResponseReceivedListener(
-    (response) => {
-      console.log("[notifications] response received:", response);
-      if (onNotificationResponse) {
-        onNotificationResponse(response);
+      console.log("[notifications] received:", normalized);
+
+      // For ORDER notifications: use native service for reliability
+      if (normalized === "ORDER") {
+        if (Platform.OS === "android") {
+          // Always use native service for ORDER (works in all states)
+          await startNativeRingtoneService();
+        } else {
+          // iOS fallback to JS audio (foreground only)
+          await playCustomSound("ORDER", true);
+        }
       } else {
-        // otherwise save as pending so UI/webview can consume later
-        pendingNotificationResponse = response;
+        // Non-ORDER notifications: foreground audio only
+        if (isAppInForeground()) {
+          await playCustomSound(normalized, false);
+        }
       }
     }
   );
 
-  try {
-    const last = await Notifications.getLastNotificationResponseAsync();
-    if (last) {
-      pendingNotificationResponse = last;
+  _responseListener = Notifications.addNotificationResponseReceivedListener(
+    async (response) => {
+      console.log("[notifications] response:", response);
+      const action = response.actionIdentifier;
+
+      if (action === "STOP_SOUND") {
+        await stopCustomSound();
+        return;
+      }
+
+      // Stop sound when user interacts with notification
+      const dataRaw = response.notification.request.content.data || {};
+      const type = (dataRaw.type || "").toString().trim().toUpperCase();
+      if (type.includes("ORDER")) {
+        await stopCustomSound();
+      }
+
+      if (onNotificationResponse) onNotificationResponse(response);
+      else pendingNotificationResponse = response;
     }
-  } catch (err) {
-    console.warn("getLastNotificationResponseAsync() failed:", err);
-  }
+  );
 };
 
+export const setOnNotificationResponse = (
+  cb: (r: Notifications.NotificationResponse) => void
+) => {
+  onNotificationResponse = cb;
+};
+
+// --- Push registration ---
 export const registerForPushNotificationsAsync = async (): Promise<{
   fcmToken: string | null;
 } | null> => {
@@ -84,15 +209,11 @@ export const registerForPushNotificationsAsync = async (): Promise<{
       const { status } = await Notifications.requestPermissionsAsync();
       finalStatus = status;
     }
-    if (finalStatus !== "granted") {
-      console.warn("Notification permission not granted");
-      return null;
-    }
+    if (finalStatus !== "granted") return null;
 
     const tokenResult = await Notifications.getDevicePushTokenAsync();
     const fcmToken = tokenResult?.data ?? null;
     console.log("[notifications] FCM token:", fcmToken);
-
     return { fcmToken };
   } catch (err) {
     console.error("Failed to get FCM token:", err);
@@ -100,33 +221,48 @@ export const registerForPushNotificationsAsync = async (): Promise<{
   }
 };
 
+// --- Local notifications (from PWA or internal trigger) ---
 export const handleWebMessageFromPWA = async (payload: {
   title?: string;
   body?: string;
   data?: Record<string, any>;
 }) => {
   try {
+    const rawType = payload?.data?.type || "";
+    const isOrder = rawType.toUpperCase().includes("ORDER");
+
+    // For ORDER notifications on Android: start native service FIRST
+    // This ensures sound plays even if notification scheduling fails
+    if (isOrder && Platform.OS === "android") {
+      await startNativeRingtoneService();
+      console.log("[notifications] Native ringtone service started for ORDER");
+    }
+
     await Notifications.scheduleNotificationAsync({
       content: {
         title: payload.title ?? "Notification",
         body: payload.body ?? "",
         data: payload.data ?? {},
-        // channelId for Android to ensure it shows with our channel config
+        categoryIdentifier:
+          isOrder && Platform.OS === "android" ? "orderCategory" : undefined,
         ...(Platform.OS === "android"
-          ? { android: { channelId: "default" } as any }
+          ? {
+              android: {
+                channelId: isOrder ? "order-alert" : "default",
+              } as any,
+            }
           : {}),
       } as any,
       trigger: null,
     });
+
+    console.log("[notifications] Local notification scheduled:", payload);
   } catch (err) {
-    console.warn("handleWebMessageFromPWA schedule failed:", err);
+    console.warn("handleWebMessageFromPWA failed:", err);
   }
 };
 
-/**
- * If a notification tap happened before the app/webview was ready, call this to pop it.
- * After popping, it clears the pending value.
- */
+// --- utils ---
 export const popPendingNotificationResponse =
   async (): Promise<Notifications.NotificationResponse | null> => {
     const p = pendingNotificationResponse;
@@ -134,9 +270,6 @@ export const popPendingNotificationResponse =
     return p;
   };
 
-/**
- * Query the device for notifications currently present in the notification tray (notification center)
- */
 export const getDeliveredNotificationsHistory = async (): Promise<
   Notifications.Notification[]
 > => {
@@ -149,12 +282,9 @@ export const getDeliveredNotificationsHistory = async (): Promise<
   }
 };
 
-/**
- * Optional cleanup if needed (call on app unmount)
- */
 export const cleanupNotifications = () => {
-  if (_receivedListener && _receivedListener.remove) _receivedListener.remove();
-  if (_responseListener && _responseListener.remove) _responseListener.remove();
+  if (_receivedListener?.remove) _receivedListener.remove();
+  if (_responseListener?.remove) _responseListener.remove();
   _receivedListener = null;
   _responseListener = null;
 };
